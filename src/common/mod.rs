@@ -12,6 +12,7 @@ use burn::{
 use serde::{Deserialize, Serialize};
 
 pub mod time_series;
+// pub mod autoencoder;
 
 #[derive(Debug, Clone)]
 pub struct TwoTuple<A, B>(pub A, pub B);

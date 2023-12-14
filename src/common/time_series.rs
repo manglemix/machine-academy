@@ -89,6 +89,8 @@ impl<B: Backend> Model<B> for GruNetwork<B> {
             x = layer.2.forward(x);
             x = self.dropout.forward(x);
         }
+        let [batch_size, seq_length, hidden_size] = x.dims();
+        x = x.slice([0..batch_size, (seq_length-1)..seq_length, 0..hidden_size]);
         for layer in &self.linears {
             x = layer.0.forward(x);
             if let Some(norm) = &layer.1 {

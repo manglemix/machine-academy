@@ -1,10 +1,10 @@
-use std::{collections::VecDeque, fs::File, path::PathBuf, sync::Mutex};
+use std::{collections::VecDeque, fs::File, path::PathBuf, sync::Mutex, hint::spin_loop};
 
 use burn::data::dataset::Dataset;
-use crossbeam::queue::SegQueue;
+use crossbeam::queue::{SegQueue, ArrayQueue};
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tokio_rayon::rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, ParallelIterator, ParallelBridge};
 
 struct CacheBlock<T> {
     items: Mutex<Box<[T]>>,
@@ -197,6 +197,134 @@ where
                     }
                     rands.push(rng);
                     item
+                })
+                .collect();
+            bincode::serialize_into(
+                File::create(data_path.join(format!("{i}.slice")))
+                    .expect("Database slice should be creatable"),
+                &block,
+            )
+            .expect("Database slice should be writable, and the type T should be serializable");
+        });
+
+    let config = AcademyDatasetConfig {
+        block_memory_size,
+        block_count,
+        block_size,
+        length,
+    };
+
+    bincode::serialize_into(
+        File::create(data_path.join("config.dat")).expect("Database config should be creatable"),
+        &config,
+    )
+    .expect("Database config should be writable");
+}
+
+
+pub fn create_dataset_from_iter<T, I>(iter: impl IntoIterator<IntoIter = I>, data_path: PathBuf, block_memory_size: usize)
+where
+    T: Serialize + Send,
+    I: ExactSizeIterator<Item = T> + ParallelBridge + Send
+{
+    let mut iter = iter.into_iter();
+    let length = iter.len();
+    std::fs::create_dir_all(&data_path).expect("Data path directories should be creatable");
+    let mut first_block = vec![];
+    let mut block_size = 0usize;
+
+    while let Some(item) = iter.next() {
+        first_block.push(item);
+        block_size += 1;
+        if bincode::serialized_size(&first_block).expect("Type T should be serializable") as usize
+            >= block_memory_size
+        {
+            break;
+        }
+    }
+    bincode::serialize_into(
+        File::create(data_path.join("0.slice")).expect("Database slice should be creatable"),
+        &first_block,
+    )
+    .expect("Database slice should be writable, and the type T should be serializable");
+
+    if block_size >= length {
+        let config = AcademyDatasetConfig {
+            block_memory_size,
+            block_count: 1,
+            block_size,
+            length,
+        };
+    
+        bincode::serialize_into(
+            File::create(data_path.join("config.dat")).expect("Database config should be creatable"),
+            &config,
+        )
+        .expect("Database config should be writable");
+        return;
+    }
+
+    let remaining_block_count = (length - block_size) / block_size;
+    let small_block_count = (length - block_size) % block_size;
+    first_block.clear();
+
+    if small_block_count > 0 {
+        for _ in 0..small_block_count {
+            first_block.push(iter.next().unwrap());
+        }
+        bincode::serialize_into(
+            File::create(data_path.join(format!("{}.slice", remaining_block_count + 1)))
+                .expect("Database slice should be creatable"),
+            &first_block,
+        )
+        .expect("Database slice should be writable, and the type T should be serializable");
+    }
+    drop(first_block);
+
+    let block_count = if small_block_count > 0 {
+        remaining_block_count + 2
+    } else {
+        remaining_block_count + 1
+    };
+
+    {
+        let mut i = block_count;
+        loop {
+            let path = data_path.join(format!("{i}.slice"));
+            if path
+                .try_exists()
+                .expect("Files in data path should be readable")
+            {
+                std::fs::remove_file(path).expect("Files in data path should be deletable");
+            } else {
+                break;
+            }
+            i += 1;
+        }
+    }
+
+    let items = ArrayQueue::new(block_size);
+
+    iter.par_bridge()
+        .for_each(|mut item| {
+            while let Err(tmp) = items.push(item) {
+                item = tmp;
+                spin_loop();
+            };
+        });
+
+    (1..(remaining_block_count + 1))
+        .into_par_iter()
+        .for_each(|i| {
+            let block: Box<[T]> = (0..block_size)
+                .into_par_iter()
+                .map(|_| {
+                    loop {
+                        if let Some(item) = items.pop() {
+                            break item;
+                        }
+                        spin_loop();
+                    }
                 })
                 .collect();
             bincode::serialize_into(
