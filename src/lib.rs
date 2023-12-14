@@ -30,7 +30,7 @@ use burn::{
 };
 use chrono::{Datelike, Timelike};
 use data::AcademyDataset;
-use rand::{rngs::SmallRng, RngCore, SeedableRng};
+use rand::{rngs::SmallRng, RngCore, SeedableRng, Rng};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub use burn;
@@ -513,6 +513,8 @@ pub fn super_train_regression<B, T, I, TC, TCI>(
         * (config.max_grad_clipping_step - config.min_grad_clipping_step + 1);
     let mut i = 0usize;
 
+    let mut configs = vec![];
+
     model_config.for_each(|model_config| {
         (config.min_batch_pow..=config.max_batch_pow)
             .into_iter()
@@ -543,29 +545,36 @@ pub fn super_train_regression<B, T, I, TC, TCI>(
                                         init_learning_rate: 10.0f64.powi(init_learning_rate_pow),
                                         stop_condition_epochs: config.stop_condition_epochs,
                                     };
-                                    let mut elapsed = start.elapsed().as_secs();
-                                    let mut hours = elapsed / 3600;
-                                    let mut mins = elapsed % 3600 / 60;
-                                    let mut secs = elapsed % 3600 % 60;
-                                    i += 1;
-                                    let progress = i as f32 / max_i as f32 * 100.0;
-                                    writeln!(log_file, "[{hours}:{mins}:{secs}] Running iter {i} of {max_i}. {progress:.2}%").expect("log file should be writable");
-                                    let stats = train_regression::<B, T, I>(
-                                        &format!("{super_dir}/iter_{i}"),
-                                        training_data_path.clone(),
-                                        testing_data_path.clone(),
-                                        max_memory_usage,
-                                        config,
-                                        device.clone(),
-                                    );
-                                    elapsed = start.elapsed().as_secs();
-                                    hours = elapsed / 3600;
-                                    mins = elapsed % 3600 / 60;
-                                    secs = elapsed % 3600 % 60;
-                                    writeln!(log_file, "[{hours}:{mins}:{secs}] Loss: {:.5}", stats.loss).expect("log file should be writable");
+                                    configs.push(config);
                                 });
                         });
                 });
             });
     });
+
+    let mut rng = SmallRng::from_entropy();
+
+    loop {
+        let config = configs.swap_remove(rng.gen_range(0..configs.len()));
+        let mut elapsed = start.elapsed().as_secs();
+        let mut hours = elapsed / 3600;
+        let mut mins = elapsed % 3600 / 60;
+        let mut secs = elapsed % 3600 % 60;
+        i += 1;
+        let progress = i as f32 / max_i as f32 * 100.0;
+        writeln!(log_file, "[{hours}:{mins}:{secs}] Running iter {i} of {max_i}. {progress:.2}%").expect("log file should be writable");
+        let stats = train_regression::<B, T, I>(
+            &format!("{super_dir}/iter_{i}"),
+            training_data_path.clone(),
+            testing_data_path.clone(),
+            max_memory_usage,
+            config,
+            device.clone(),
+        );
+        elapsed = start.elapsed().as_secs();
+        hours = elapsed / 3600;
+        mins = elapsed % 3600 / 60;
+        secs = elapsed % 3600 % 60;
+        writeln!(log_file, "[{hours}:{mins}:{secs}] Loss: {:.5}", stats.loss).expect("log file should be writable");
+    }
 }
