@@ -206,6 +206,8 @@ pub struct TrainingConfig<T> {
     pub init_learning_rate: f64,
     #[serde(default = "default_stop_condition_epochs")]
     pub stop_condition_epochs: usize,
+    #[serde(default = "default_learning_rate_warmup_steps")]
+    pub learning_rate_warmup_steps: usize,
 }
 
 fn default_num_epochs() -> usize {
@@ -232,6 +234,10 @@ fn default_stop_condition_epochs() -> usize {
     2
 }
 
+fn default_learning_rate_warmup_steps() -> usize {
+    1000
+}
+
 impl<T: Serialize + DeserializeOwned> Config for TrainingConfig<T> {}
 
 impl<T> TrainingConfig<T> {
@@ -245,6 +251,7 @@ impl<T> TrainingConfig<T> {
             seed: default_seed(),
             init_learning_rate: default_init_learning_rate(),
             stop_condition_epochs: default_stop_condition_epochs(),
+            learning_rate_warmup_steps: default_learning_rate_warmup_steps()
         }
     }
 }
@@ -378,6 +385,7 @@ where
             TrainingModel::new(model),
             config.optimizer.init(),
             NoamLrSchedulerConfig::new(config.init_learning_rate)
+                .with_warmup_steps(config.learning_rate_warmup_steps)
                 .with_model_size(num_params)
                 .init(),
         );
@@ -419,6 +427,8 @@ pub struct SuperTrainingConfig<T> {
     pub init_learning_rate_min_pow: i32,
     #[serde(default = "default_init_learning_rate_max_pow")]
     pub init_learning_rate_max_pow: i32,
+    #[serde(default = "default_learning_rate_warmup_steps")]
+    pub learning_rate_warmup_steps: usize,
     #[serde(default = "default_stop_condition_epochs")]
     pub stop_condition_epochs: usize,
     #[serde(default = "default_min_grad_clipping_step")]
@@ -442,11 +452,11 @@ fn default_seed_count() -> usize {
 }
 
 fn default_init_learning_rate_min_pow() -> i32 {
-    -4
+    0
 }
 
 fn default_init_learning_rate_max_pow() -> i32 {
-    -2
+    3
 }
 
 fn default_min_grad_clipping_step() -> usize {
@@ -544,6 +554,7 @@ pub fn super_train_regression<B, T, I, TC, TCI>(
                                         seed,
                                         init_learning_rate: 10.0f64.powi(init_learning_rate_pow),
                                         stop_condition_epochs: config.stop_condition_epochs,
+                                        learning_rate_warmup_steps: config.learning_rate_warmup_steps
                                     };
                                     configs.push(config);
                                 });
