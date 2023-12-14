@@ -91,6 +91,7 @@ impl<B: Backend> Model<B> for GruNetwork<B> {
         }
         let [batch_size, seq_length, hidden_size] = x.dims();
         x = x.slice([0..batch_size, (seq_length-1)..seq_length, 0..hidden_size]);
+        let mut x = x.reshape([batch_size, hidden_size]);
         for layer in &self.linears {
             x = layer.0.forward(x);
             if let Some(norm) = &layer.1 {
@@ -99,8 +100,9 @@ impl<B: Backend> Model<B> for GruNetwork<B> {
             x = layer.2.forward(x);
             x = self.dropout.forward(x);
         }
-        let [batch_size, a, b] = x.dims();
-        x.reshape([batch_size, a * b])
+        // let [batch_size, a, b] = x.dims();
+        // x.reshape([batch_size, a * b])
+        x
     }
 
     fn from_config(config: Self::Config) -> Self {
