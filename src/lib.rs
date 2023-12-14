@@ -2,7 +2,7 @@ use std::{
     fmt::{Debug, Display},
     marker::PhantomData,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex}, fs::File,
+    sync::{Arc, Mutex, Once}, fs::File,
     io::Write, time::Instant
 };
 
@@ -311,6 +311,26 @@ pub struct Statistics {
     loss: f64
 }
 
+static LOGGING: Once = Once::new();
+static FILE_LOGGING: DynFileLogger = DynFileLogger { file: Mutex::new(None) };
+
+
+struct DynFileLogger {
+    file: Mutex<Option<File>>
+}
+
+
+impl Write for &'static DynFileLogger {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.file.lock().unwrap().as_mut().unwrap().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.lock().unwrap().as_mut().unwrap().flush()
+    }
+}
+
+
 pub fn train_regression<B, T, I>(
     artifact_dir: &str,
     training_data_path: PathBuf,
@@ -360,6 +380,35 @@ where
     let model = T::from_config(config.model_config);
     let num_params = model.num_params();
 
+    LOGGING.call_once(|| {
+        let start = Instant::now();
+        let file: Box<dyn Write + Send + 'static> = Box::new(&FILE_LOGGING);
+
+        fern::Dispatch::new()
+            // Perform allocation-free log formatting
+            .format(move |out, message, record| {
+                let elapsed = start.elapsed().as_secs();
+                let hours = elapsed / 3600;
+                let mins = elapsed % 3600 / 60;
+                let secs = elapsed % 3600 % 60;
+                out.finish(format_args!(
+                    "[{hours}:{mins}:{secs} {} {}] {}",
+                    record.level(),
+                    record.target(),
+                    message
+                ))
+            })
+            // Add blanket level filter -
+            .level(log::LevelFilter::Info)
+            // Output to stdout, files, and other Dispatch configurations
+            .chain(file)
+            // Apply globally
+            .apply()
+            .expect("Logger should have initialized correctly");
+    });
+
+    *FILE_LOGGING.file.lock().unwrap() = Some(fern::log_file(Path::new(artifact_dir).join("experiment.log")).expect("experiment.log should be creatable"));
+
     let loss_state: Arc<Mutex<NumericMetricState>> = Default::default();
     let learner = LearnerBuilder::new(artifact_dir)
         .metric_valid_numeric(TrackedLossMetric {
@@ -370,6 +419,7 @@ where
         .metric_train_numeric(LearningRateMetric::new())
         .metric_train_numeric(CpuTemperature::new())
         .metric_train_numeric(CpuUse::new())
+        .log_to_file(false)
         .early_stopping(MetricEarlyStoppingStrategy::new::<LossMetric<B>>(
             Aggregate::Mean,
             Direction::Lowest,
@@ -403,6 +453,7 @@ where
     let stats = Statistics {
         loss
     };
+    
     stats.save(Path::new(artifact_dir).join("statistics.json")).expect("Statistics file should be creatable");
     stats
 }
@@ -523,7 +574,7 @@ pub fn super_train_regression<B, T, I, TC, TCI>(
         * (config.max_grad_clipping_step - config.min_grad_clipping_step + 1);
     let mut i = 0usize;
 
-    let mut configs = vec![];
+    let mut configs = Vec::with_capacity(max_i);
 
     model_config.for_each(|model_config| {
         (config.min_batch_pow..=config.max_batch_pow)
