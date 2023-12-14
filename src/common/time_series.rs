@@ -17,7 +17,7 @@ use burn::{
 
 use crate::{Model, RegressionBatch, TrainableModel};
 
-use super::{Activation, ThreeTuple};
+use super::{Activation, ThreeTuple, Normalize};
 
 #[derive(Config)]
 pub struct GruNetworkConfig {
@@ -153,6 +153,7 @@ pub struct GruNetworkSuperConfig {
     pub min_norm_eps_pow: isize,
     #[config(default = -1)]
     pub max_norm_eps_pow: isize,
+    pub normalize: Normalize,
 }
 
 
@@ -174,8 +175,17 @@ impl IntoIterator for GruNetworkSuperConfig {
         let max_linear_count = self.max_linear_count;
         let min_norm_eps_pow = self.min_norm_eps_pow;
         let max_norm_eps_pow = self.max_norm_eps_pow;
+
+        let mut len = self.activations.len() * (max_hidden_size - min_hidden_size + 1) * (max_dropout_prob_step - min_dropout_prob_step + 1) * (max_gru_count - min_gru_count + 1) * (max_linear_count - min_linear_count + 1) * (max_norm_eps_pow - min_norm_eps_pow + 1) as usize * 2;
+        
+        if let Normalize::Sometimes = self.normalize {
+            len *= 2;
+        }
+
+        let normalize = self.normalize;
+        
         GruNetworkSuperConfigIter {
-            len: self.activations.len() * (max_hidden_size - min_hidden_size + 1) * (max_dropout_prob_step - min_dropout_prob_step + 1) * (max_gru_count - min_gru_count + 1) * (max_linear_count - min_linear_count + 1) * 4,
+            len,
             iter: Box::new(
                 self.activations.into_iter()
                     .flat_map(move |activation| {
@@ -194,12 +204,16 @@ impl IntoIterator for GruNetworkSuperConfig {
                                                             .into_iter()
                                                             .flat_map(move |norm_eps_pow| {
                                                                 let norm_eps = 10.0f64.powi(norm_eps_pow as i32);
-                                                                [
-                                                                    GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, false, false, norm_eps),
-                                                                    GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, false, true, norm_eps),
-                                                                    GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, true, false, norm_eps),
-                                                                    GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, true, true, norm_eps),
-                                                                ]
+                                                                match normalize {
+                                                                    Normalize::Always => vec![GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, false, true, norm_eps), GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, true, true, norm_eps)],
+                                                                    Normalize::Never => vec![GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, false, false, norm_eps), GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, true, false, norm_eps)],
+                                                                    Normalize::Sometimes => vec![
+                                                                        GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, false, false, norm_eps),
+                                                                        GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, false, true, norm_eps),
+                                                                        GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, true, false, norm_eps),
+                                                                        GruNetworkConfig::new_basic(activation, d_input, d_output, hidden_size, gru_count, linear_count, dropout_prob, true, true, norm_eps),
+                                                                    ],
+                                                                }
                                                             })
                                                         
                                                     })

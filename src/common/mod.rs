@@ -165,6 +165,13 @@ impl<M1: AutodiffModule<B>, M2: AutodiffModule<B>, M3: AutodiffModule<B>, B: Aut
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Normalize {
+    Always,
+    Never,
+    Sometimes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Activation {
     Relu,
     Gelu,
