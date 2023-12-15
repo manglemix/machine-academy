@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 burn = { version = "0.11", features=["train", "wgpu"]}
 serde = { version = "1", features = ["derive"] }
-crossbeam = "0.8"
+# crossbeam = "0.8"
 rand = { version = "0.8", features = ["small_rng"] }
 # toml = { workspace = true }
 # fxhash = "0.2"

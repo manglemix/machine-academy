@@ -11,9 +11,9 @@ use burn::{
 };
 use serde::{Deserialize, Serialize};
 
-pub mod time_series;
 pub mod autoencoder;
 pub mod linear;
+pub mod time_series;
 
 #[derive(Debug, Clone)]
 pub struct TwoTuple<A, B>(pub A, pub B);
@@ -302,7 +302,6 @@ impl<T> Default for PhantomModule<T> {
         Self(PhantomData)
     }
 }
-
 
 fn find_nth_factor(num: usize, mut n: usize) -> Option<usize> {
     let sqrt_num = (num as f64).sqrt() as usize;

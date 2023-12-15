@@ -1,8 +1,13 @@
-use burn::{tensor::{backend::Backend, Tensor}, module::Module, nn::{Linear, GroupNorm, LinearConfig, GroupNormConfig}, config::Config};
+use burn::{
+    config::Config,
+    module::Module,
+    nn::{GroupNorm, GroupNormConfig, Linear, LinearConfig},
+    tensor::{backend::Backend, Tensor},
+};
 
 use crate::Model;
 
-use super::{ThreeTuple, Activation};
+use super::{Activation, ThreeTuple};
 
 #[derive(Module, Debug)]
 pub struct LinearNetwork<B: Backend> {
@@ -14,7 +19,6 @@ pub struct LinearNetworkConfig {
     pub linears: Vec<(LinearConfig, Option<GroupNormConfig>, Activation)>,
 }
 
-
 impl<B: Backend> Model<B> for LinearNetwork<B> {
     type Input = Tensor<B, 2>;
     type Output = Tensor<B, 2>;
@@ -22,7 +26,13 @@ impl<B: Backend> Model<B> for LinearNetwork<B> {
 
     fn from_config(config: Self::Config) -> Self {
         Self {
-            linears: config.linears.into_iter().map(|(linear_config, norm, activation)| ThreeTuple(linear_config.init(), norm.map(|x| x.init()), activation)).collect()
+            linears: config
+                .linears
+                .into_iter()
+                .map(|(linear_config, norm, activation)| {
+                    ThreeTuple(linear_config.init(), norm.map(|x| x.init()), activation)
+                })
+                .collect(),
         }
     }
 
