@@ -1,10 +1,10 @@
-use std::{collections::VecDeque, fs::File, path::PathBuf, sync::Mutex, hint::spin_loop};
+use std::{collections::VecDeque, fs::File, path::PathBuf, sync::Mutex};
 
 use burn::data::dataset::Dataset;
-use crossbeam::queue::{SegQueue, ArrayQueue};
+use crossbeam::queue::SegQueue;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use rayon::iter::{IntoParallelIterator, ParallelIterator, ParallelBridge};
 
 struct CacheBlock<T> {
     items: Mutex<Box<[T]>>,
@@ -132,9 +132,10 @@ where
             block_size,
             length,
         };
-    
+
         bincode::serialize_into(
-            File::create(data_path.join("config.dat")).expect("Database config should be creatable"),
+            File::create(data_path.join("config.dat"))
+                .expect("Database config should be creatable"),
             &config,
         )
         .expect("Database config should be writable");
@@ -221,11 +222,13 @@ where
     .expect("Database config should be writable");
 }
 
-
-pub fn create_dataset_from_iter<T, I>(iter: impl IntoIterator<IntoIter = I>, data_path: PathBuf, block_memory_size: usize)
-where
+pub fn create_dataset_from_iter<T, I>(
+    iter: impl IntoIterator<IntoIter = I>,
+    data_path: PathBuf,
+    block_memory_size: usize,
+) where
     T: Serialize + Send,
-    I: ExactSizeIterator<Item = T> + ParallelBridge + Send
+    I: ExactSizeIterator<Item = T> + Send,
 {
     let mut iter = iter.into_iter();
     let length = iter.len();
@@ -255,9 +258,10 @@ where
             block_size,
             length,
         };
-    
+
         bincode::serialize_into(
-            File::create(data_path.join("config.dat")).expect("Database config should be creatable"),
+            File::create(data_path.join("config.dat"))
+                .expect("Database config should be creatable"),
             &config,
         )
         .expect("Database config should be writable");
@@ -303,29 +307,12 @@ where
         }
     }
 
-    let items = ArrayQueue::new(block_size);
-
-    iter.par_bridge()
-        .for_each(|mut item| {
-            while let Err(tmp) = items.push(item) {
-                item = tmp;
-                spin_loop();
-            };
-        });
-
     (1..(remaining_block_count + 1))
-        .into_par_iter()
+        .into_iter()
         .for_each(|i| {
             let block: Box<[T]> = (0..block_size)
-                .into_par_iter()
-                .map(|_| {
-                    loop {
-                        if let Some(item) = items.pop() {
-                            break item;
-                        }
-                        spin_loop();
-                    }
-                })
+                .into_iter()
+                .map(|_| iter.next().expect("Iterator should not have exhausted"))
                 .collect();
             bincode::serialize_into(
                 File::create(data_path.join(format!("{i}.slice")))
