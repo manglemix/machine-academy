@@ -24,12 +24,12 @@ use burn::{
     train::{
         metric::{
             state::{FormatOptions, NumericMetricState},
-            store::{Aggregate, Direction, Split},
+            store::{Aggregate, Direction, Split, EventStoreClient},
             Adaptor, CpuTemperature, CpuUse, LearningRateMetric, LossMetric, Metric, MetricEntry,
             MetricMetadata, Numeric,
         },
         ClassificationOutput, LearnerBuilder, MetricEarlyStoppingStrategy, RegressionOutput,
-        StoppingCondition, TrainOutput, TrainStep, ValidStep,
+        StoppingCondition, TrainOutput, TrainStep, ValidStep, EarlyStoppingStrategy,
     },
 };
 use chrono::{Datelike, Timelike};
@@ -337,6 +337,14 @@ impl Write for &'static DynFileLogger {
     }
 }
 
+struct NaNStopEarly;
+
+impl EarlyStoppingStrategy for NaNStopEarly {
+    fn should_stop(&mut self, epoch: usize, store: &EventStoreClient) -> bool {
+        store.find_metric("Loss", epoch, Aggregate::Mean, Split::Valid).map(|x| x.is_nan()).unwrap_or_default()
+    }
+}
+
 pub fn train_regression<B, T, I>(
     artifact_dir: &str,
     training_data_path: PathBuf,
@@ -436,6 +444,7 @@ where
                 n_epochs: config.stop_condition_epochs,
             },
         ))
+        .early_stopping(NaNStopEarly)
         .with_file_checkpointer(CompactRecorder::new())
         .devices(vec![device])
         .num_epochs(config.num_epochs)

@@ -247,7 +247,11 @@ pub fn create_dataset<T: Serialize + Send>(
         let file_path = data_path.join(format!("{i}.slice"));
         if init_config.is_some() {
             if file_path.exists() {
-                return;
+                match &mut gen {
+                    DataGenerator::Immut(x) => x.skip(block_size),
+                    DataGenerator::Mut(x) => x.skip(block_size),
+                }
+                continue;
             }
         }
         let block: Box<[T]> = match gen {
