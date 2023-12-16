@@ -141,13 +141,16 @@ pub fn create_dataset<T: Serialize + Send>(
 
     let mut first_block = vec![];
     let mut block_size = 0usize;
-    let mut remaining_block_count = 0usize;
-    let mut small_block_count = 0usize;
-    let mut block_count = 1;
+    let remaining_block_count;
+    let small_block_count;
+    let block_count;
 
     if let Some(config) = &init_config {
         block_size = config.block_size;
         first_block = Vec::with_capacity(block_size);
+        small_block_count = (length - block_size) % block_size;
+        remaining_block_count = (length - block_size) / block_size;
+        block_count = config.block_count;
 
         match &mut gen {
             DataGenerator::Immut(x) => x.skip(block_size),
