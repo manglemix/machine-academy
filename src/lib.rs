@@ -249,8 +249,8 @@ impl<T> TrainingConfig<T> {
 
 #[derive(Config)]
 pub struct Statistics {
-    loss_mean: f64,
-    loss_std_dev: f64
+    loss_mean: f32,
+    loss_std_dev: f32
 }
 
 static LOGGING: Once = Once::new();
@@ -406,7 +406,7 @@ where
     let batcher_valid = RegressionBatcher::<B::InnerBackend>::new(device);
     let losses = model_trained.valid().step(batcher_valid.batch(items));
     let (var, mean) = losses.loss.var_mean(0);
-    let var: f64 = var.into_scalar().elem();
+    let var: f32 = var.into_scalar().elem();
     let loss_mean = mean.into_scalar().elem();
 
     model_trained
