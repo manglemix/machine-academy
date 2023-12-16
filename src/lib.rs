@@ -341,7 +341,7 @@ struct NaNStopEarly;
 
 impl EarlyStoppingStrategy for NaNStopEarly {
     fn should_stop(&mut self, epoch: usize, store: &EventStoreClient) -> bool {
-        store.find_metric("Loss", epoch, Aggregate::Mean, Split::Valid).map(|x| x.is_nan()).unwrap_or_default()
+        store.find_metric("Loss", epoch, Aggregate::Mean, Split::Train).map(|x| x.is_nan()).unwrap_or_default()
     }
 }
 
