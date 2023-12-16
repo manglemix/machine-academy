@@ -39,6 +39,8 @@ use rand::{rngs::SmallRng, Rng, RngCore, SeedableRng};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub use burn;
+#[cfg(feature = "burn-ndarray")]
+pub use burn_ndarray;
 
 pub mod common;
 pub mod data;
