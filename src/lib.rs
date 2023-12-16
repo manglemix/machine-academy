@@ -12,7 +12,7 @@ use std::{
 
 use burn::{
     config::Config,
-    data::dataloader::{batcher::Batcher, DataLoaderBuilder},
+    data::{dataloader::{batcher::Batcher, DataLoaderBuilder}, dataset::Dataset},
     lr_scheduler::noam::NoamLrSchedulerConfig,
     module::{AutodiffModule, Module},
     optim::AdamConfig,
@@ -36,6 +36,7 @@ use chrono::{Datelike, Timelike};
 use data::AcademyDataset;
 pub use rand;
 use rand::{rngs::SmallRng, Rng, RngCore, SeedableRng};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub use burn;
@@ -72,15 +73,6 @@ impl<B: AutodiffBackend, M: TrainableModel<B, RegressionOutput<B>> + AutodiffMod
     }
 }
 
-// impl<B: AutodiffBackend, M: Model<LossOutput<B> = ClassificationOutput<B>, ModelStruct<B> = M> + AutodiffModule<B>>
-//     TrainStep<M::Batch<B>, ClassificationOutput<B>> for TrainingModel<M, B>
-// {
-//     fn step(&self, batch: M::Batch<B>) -> TrainOutput<ClassificationOutput<B>> {
-//         let item = M::forward_training(&self.0, batch);
-//         TrainOutput::new(&self.0, item.loss.backward(), item)
-//     }
-// }
-
 impl<B: Backend, M: TrainableModel<B, RegressionOutput<B>>> ValidStep<M::Batch, RegressionOutput<B>>
     for TrainingModel<M, B>
 {
@@ -88,14 +80,6 @@ impl<B: Backend, M: TrainableModel<B, RegressionOutput<B>>> ValidStep<M::Batch, 
         M::forward_training(&self.0, batch)
     }
 }
-
-// impl<B: Backend, M: Model<LossOutput<B> = ClassificationOutput<B>, ModelStruct<B> = M>>
-//     ValidStep<M::Batch<B>, ClassificationOutput<B>> for TrainingModel<M, B>
-// {
-//     fn step(&self, batch: M::Batch<B>) -> ClassificationOutput<B> {
-//         M::forward_training(&self.0, batch)
-//     }
-// }
 
 impl<B: Backend, M: Module<B>> Module<B> for TrainingModel<M, B> {
     type Record = M::Record;
@@ -263,59 +247,10 @@ impl<T> TrainingConfig<T> {
     }
 }
 
-/// The loss metric.
-pub struct TrackedLossMetric<B: Backend> {
-    state: Arc<Mutex<NumericMetricState>>,
-    _b: B,
-}
-
-/// The [loss metric](LossMetric) input type.
-pub struct LossInput<B: Backend> {
-    tensor: Tensor<B, 1>,
-}
-impl<B: Backend> Adaptor<LossInput<B>> for ClassificationOutput<B> {
-    fn adapt(&self) -> LossInput<B> {
-        LossInput {
-            tensor: self.loss.clone(),
-        }
-    }
-}
-impl<B: Backend> Adaptor<LossInput<B>> for RegressionOutput<B> {
-    fn adapt(&self) -> LossInput<B> {
-        LossInput {
-            tensor: self.loss.clone(),
-        }
-    }
-}
-
-impl<B: Backend> Metric for TrackedLossMetric<B> {
-    const NAME: &'static str = "Loss";
-
-    type Input = LossInput<B>;
-
-    fn update(&mut self, loss: &Self::Input, _metadata: &MetricMetadata) -> MetricEntry {
-        let loss = f64::from_elem(loss.tensor.clone().mean().into_data().value[0]);
-
-        self.state
-            .lock()
-            .unwrap()
-            .update(loss, 1, FormatOptions::new(Self::NAME).precision(2))
-    }
-
-    fn clear(&mut self) {
-        self.state.lock().unwrap().reset()
-    }
-}
-
-impl<B: Backend> Numeric for TrackedLossMetric<B> {
-    fn value(&self) -> f64 {
-        self.state.lock().unwrap().value()
-    }
-}
-
 #[derive(Config)]
 pub struct Statistics {
-    loss: f64,
+    loss_mean: f64,
+    loss_std_dev: f64
 }
 
 static LOGGING: Once = Once::new();
@@ -341,7 +276,11 @@ struct NaNStopEarly;
 
 impl EarlyStoppingStrategy for NaNStopEarly {
     fn should_stop(&mut self, epoch: usize, store: &EventStoreClient) -> bool {
-        store.find_metric("Loss", epoch, Aggregate::Mean, Split::Train).map(|x| x.is_nan()).unwrap_or_default()
+        let out = store.find_metric("Loss", epoch, Aggregate::Mean, Split::Train).map(|x| x.is_nan()).unwrap_or_default();
+        if out {
+            log::error!("NaN loss detected. Ending training.");
+        }
+        out
     }
 }
 
@@ -388,7 +327,7 @@ where
         .batch_size(config.batch_size)
         .shuffle(config.seed)
         .num_workers(config.num_workers)
-        .build(AcademyDataset::new(testing_data_path, max_memory_usage));
+        .build(AcademyDataset::new(testing_data_path.clone(), max_memory_usage));
 
     let model = T::from_config(config.model_config);
     let num_params = model.num_params();
@@ -425,16 +364,12 @@ where
             .expect("experiment.log should be creatable"),
     );
 
-    let loss_state: Arc<Mutex<NumericMetricState>> = Default::default();
     let learner = LearnerBuilder::new(artifact_dir)
-        .metric_valid_numeric(TrackedLossMetric {
-            state: loss_state.clone(),
-            _b: Default::default(),
-        })
+        .metric_valid_numeric(LossMetric::new())
         .metric_train_numeric(LossMetric::new())
         .metric_train_numeric(LearningRateMetric::new())
-        .metric_train_numeric(CpuTemperature::new())
         .metric_train_numeric(CpuUse::new())
+        .metric_train_numeric(CpuTemperature::new())
         .log_to_file(false)
         .early_stopping(MetricEarlyStoppingStrategy::new::<LossMetric<B>>(
             Aggregate::Mean,
@@ -446,7 +381,7 @@ where
         ))
         .early_stopping(NaNStopEarly)
         .with_file_checkpointer(CompactRecorder::new())
-        .devices(vec![device])
+        .devices(vec![device.clone()])
         .num_epochs(config.num_epochs)
         .build(
             TrainingModel::new(model),
@@ -459,6 +394,21 @@ where
 
     let model_trained = learner.fit(dataloader_train, dataloader_test);
 
+    let valid_dataset = AcademyDataset::<I>::new(testing_data_path, max_memory_usage);
+
+    let items: Vec<_> = (0..valid_dataset.len())
+        .into_par_iter()
+        .map(|i|
+            valid_dataset.get(i).unwrap()
+        )
+        .collect();
+
+    let batcher_valid = RegressionBatcher::<B::InnerBackend>::new(device);
+    let losses = model_trained.valid().step(batcher_valid.batch(items));
+    let (var, mean) = losses.loss.var_mean(0);
+    let var: f64 = var.into_scalar().elem();
+    let loss_mean = mean.into_scalar().elem();
+
     model_trained
         .save_file(
             Path::new(artifact_dir).join("model"),
@@ -466,8 +416,7 @@ where
         )
         .expect("Trained model should be saved successfully");
 
-    let loss = loss_state.lock().unwrap().value();
-    let stats = Statistics { loss };
+    let stats = Statistics { loss_mean, loss_std_dev: var.sqrt() };
 
     stats
         .save(Path::new(artifact_dir).join("statistics.json"))
@@ -659,7 +608,7 @@ pub fn super_train_regression<B, T, I, TC, TCI>(
         hours = elapsed / 3600;
         mins = elapsed % 3600 / 60;
         secs = elapsed % 3600 % 60;
-        writeln!(log_file, "[{hours}:{mins}:{secs}] Loss: {:.5}", stats.loss)
+        writeln!(log_file, "[{hours}:{mins}:{secs}] Loss Mean: {:.5}, Loss σ: {:.5}", stats.loss_mean, stats.loss_std_dev)
             .expect("log file should be writable");
     }
 }
