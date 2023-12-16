@@ -6,7 +6,7 @@ use std::{
     io::Write,
     marker::PhantomData,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, Once},
+    sync::{Mutex, Once},
     time::Instant,
 };
 
@@ -18,17 +18,14 @@ use burn::{
     optim::AdamConfig,
     record::CompactRecorder,
     tensor::{
-        backend::{AutodiffBackend, Backend},
-        ElementConversion, Tensor,
+        backend::{AutodiffBackend, Backend}, Tensor,
     },
     train::{
         metric::{
-            state::{FormatOptions, NumericMetricState},
             store::{Aggregate, Direction, Split, EventStoreClient},
-            Adaptor, CpuTemperature, CpuUse, LearningRateMetric, LossMetric, Metric, MetricEntry,
-            MetricMetadata, Numeric,
+            CpuTemperature, CpuUse, LearningRateMetric, LossMetric
         },
-        ClassificationOutput, LearnerBuilder, MetricEarlyStoppingStrategy, RegressionOutput,
+        LearnerBuilder, MetricEarlyStoppingStrategy, RegressionOutput,
         StoppingCondition, TrainOutput, TrainStep, ValidStep, EarlyStoppingStrategy,
     },
 };
@@ -38,6 +35,7 @@ pub use rand;
 use rand::{rngs::SmallRng, Rng, RngCore, SeedableRng};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use num_traits::cast::ToPrimitive;
 
 pub use burn;
 #[cfg(feature = "burn-ndarray")]
@@ -406,8 +404,8 @@ where
     let batcher_valid = RegressionBatcher::<B::InnerBackend>::new(device);
     let losses = model_trained.valid().step(batcher_valid.batch(items));
     let (var, mean) = losses.loss.var_mean(0);
-    let var: f32 = var.into_scalar().elem();
-    let loss_mean = mean.into_scalar().elem();
+    let loss_std_dev = var.into_scalar().to_f32().unwrap().sqrt();
+    let loss_mean = mean.into_scalar().to_f32().unwrap();
 
     model_trained
         .save_file(
@@ -416,7 +414,7 @@ where
         )
         .expect("Trained model should be saved successfully");
 
-    let stats = Statistics { loss_mean, loss_std_dev: var.sqrt() };
+    let stats = Statistics { loss_mean, loss_std_dev };
 
     stats
         .save(Path::new(artifact_dir).join("statistics.json"))

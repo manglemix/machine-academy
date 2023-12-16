@@ -1740,6 +1740,7 @@ dependencies = [
  "chrono",
  "fern",
  "log",
+ "num-traits",
  "rand",
  "rayon",
  "serde",
