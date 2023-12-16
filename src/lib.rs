@@ -1,4 +1,4 @@
-#![feature(int_roundings)]
+#![feature(int_roundings, iterator_try_collect)]
 
 use std::{
     fmt::{Debug, Display},

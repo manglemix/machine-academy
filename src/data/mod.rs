@@ -26,7 +26,7 @@ pub struct AcademyDataset<T> {
 }
 
 impl<T> AcademyDataset<T> {
-    pub fn new(data_path: PathBuf, max_memory_usage: usize) -> Self {
+    pub fn new(data_path: PathBuf, max_cached_blocks: usize) -> Self {
         let config: AcademyDatasetConfig = bincode::deserialize_from(
             File::open(data_path.join("config.dat")).expect("config.dat should be readable"),
         )
@@ -42,7 +42,7 @@ impl<T> AcademyDataset<T> {
             last_used: Mutex::new(VecDeque::with_capacity(config.block_count)),
             length: config.length,
             block_size: config.block_size,
-            max_cached_blocks: (max_memory_usage / config.block_memory_size).max(1),
+            max_cached_blocks,
             data_path,
         }
     }
@@ -91,7 +91,7 @@ impl<T: DeserializeOwned + Send + Sync + Clone> Dataset<T> for AcademyDataset<T>
             last_used.push_front(block_index);
         }
 
-        items.get(block_index % self.block_size).cloned()
+        items.get(index % self.block_size).cloned()
     }
 
     fn len(&self) -> usize {
@@ -103,16 +103,18 @@ pub trait DataGen: Sync {
     type Output;
 
     fn gen(&self) -> Self::Output;
+    fn skip(&mut self, num: usize);
 }
 
 pub trait MutDataGen {
     type Output;
 
     fn gen(&mut self) -> Self::Output;
+    fn skip(&mut self, num: usize);
 }
 
 pub enum DataGenerator<'a, T> {
-    Immut(&'a dyn DataGen<Output = T>),
+    Immut(&'a mut dyn DataGen<Output = T>),
     Mut(&'a mut dyn MutDataGen<Output = T>),
 }
 
@@ -139,10 +141,18 @@ pub fn create_dataset<T: Serialize + Send>(
 
     let mut first_block = vec![];
     let mut block_size = 0usize;
+    let mut remaining_block_count = 0usize;
+    let mut small_block_count = 0usize;
+    let mut block_count = 1;
 
     if let Some(config) = &init_config {
-        block_size = config.length;
+        block_size = config.block_size;
         first_block = Vec::with_capacity(block_size);
+
+        match &mut gen {
+            DataGenerator::Immut(x) => x.skip(block_size),
+            DataGenerator::Mut(x) => x.skip(block_size),
+        }
     } else {
         for _ in 0..length {
             first_block.push(match &mut gen {
@@ -163,9 +173,17 @@ pub fn create_dataset<T: Serialize + Send>(
         )
         .expect("Database slice should be writable, and the type T should be serializable");
 
+        small_block_count = (length - block_size) % block_size;
+        remaining_block_count = (length - block_size) / block_size;
+        block_count = if small_block_count > 0 {
+            remaining_block_count + 2
+        } else {
+            remaining_block_count + 1
+        };
+
         let config = AcademyDatasetConfig {
             block_memory_size,
-            block_count: 1,
+            block_count,
             block_size,
             length,
         };
@@ -183,9 +201,6 @@ pub fn create_dataset<T: Serialize + Send>(
         first_block.clear();
     }
 
-    let remaining_block_count = (length - block_size) / block_size;
-    let small_block_count = (length - block_size) % block_size;
-
     if small_block_count > 0 {
         let small_block_path = data_path.join(format!("{}.slice", remaining_block_count + 1));
         if init_config.is_none() || !small_block_path.exists() {
@@ -200,15 +215,14 @@ pub fn create_dataset<T: Serialize + Send>(
                 &first_block,
             )
             .expect("Database slice should be writable, and the type T should be serializable");
+        } else {
+            match &mut gen {
+                DataGenerator::Immut(x) => x.skip(small_block_count),
+                DataGenerator::Mut(x) => x.skip(small_block_count),
+            }
         }
     }
     drop(first_block);
-
-    let block_count = if small_block_count > 0 {
-        remaining_block_count + 2
-    } else {
-        remaining_block_count + 1
-    };
 
     {
         let mut i = block_count;
@@ -355,3 +369,63 @@ pub fn create_dataset<T: Serialize + Send>(
 //             .expect("Database slice should be writable, and the type T should be serializable");
 //         });
 // }
+
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashSet, sync::atomic::AtomicU8};
+
+    use burn::data::dataset::Dataset;
+    use tempfile::tempdir;
+
+    use super::{create_dataset, DataGen, AcademyDataset};
+
+    #[derive(Default)]
+    struct ByteGen(AtomicU8);
+
+    impl DataGen for ByteGen {
+        type Output = u8;
+
+        fn gen(&self) -> Self::Output {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn skip(&mut self, num: usize) {
+            self.0.fetch_add(num as u8, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn test_create_db_01() {
+        let dir = tempdir().unwrap();
+        let mut gen = ByteGen::default();
+        create_dataset(50, dir.path().into(), 20, super::DataGenerator::Immut(&mut gen));
+        let read_dir = std::fs::read_dir(dir.path()).unwrap();
+        let dirs: HashSet<_> = read_dir.into_iter().map(|x| x.map(|x| x.file_name().to_str().unwrap().to_string())).try_collect().unwrap();
+        assert_eq!(dirs.len(), 6, "{dirs:?}");
+        assert!(dirs.contains("0.slice"));
+        assert!(dirs.contains("1.slice"));
+        assert!(dirs.contains("2.slice"));
+        assert!(dirs.contains("3.slice"));
+        assert!(dirs.contains("4.slice"));
+        assert!(dirs.contains("config.dat"));
+    }
+
+    #[test]
+    fn test_use_db_01() {
+        let dir = tempdir().unwrap();
+        let mut gen = ByteGen::default();
+        create_dataset(50, dir.path().into(), 20, super::DataGenerator::Immut(&mut gen));
+        drop(gen);
+        
+        let db = AcademyDataset::<u8>::new(dir.path().into(), 20);
+        let mut occurrences = [false; 50];
+        for i in 0..50 {
+            occurrences[db.get(i).unwrap() as usize] = true;
+        }
+        assert!(!occurrences.contains(&false));
+        for i in 50..100 {
+            assert_eq!(db.get(i), None);
+        }
+    }
+}
